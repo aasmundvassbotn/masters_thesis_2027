@@ -217,3 +217,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Project-specific ---
+.DS_Store
+# Outputs from your own training runs
+DDPG/checkpoints/my_*
+DDPG/plots/*
+!DDPG/plots/.gitkeep

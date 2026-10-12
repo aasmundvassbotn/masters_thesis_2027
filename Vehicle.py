@@ -1,0 +1,595 @@
+from typing import List
+import numpy as np
+from numpy import sign
+from copy import deepcopy
+from Object import Object
+
+class Vehicle(Object):
+    def __init__(self, center: np.array, length: float, width: float, heading: float, 
+                    dt : float = 0.1, alpha_max : float = 1.2, v_max : float = 8, 
+                    gamma : float = 5e-7, tau_throttle : float = 1, tau_steering : float = 1):
+
+        """ Vehicle location and vertices """
+        self.heading = heading # psi
+        self.verticesVCF = self.init_verticesVCF(length, width)
+        self.position_center = center
+        # initialize the originVCF as a CCT point, hence the minus!
+        self.originVCF = self.CCFtoWCF(np.array([0.0, -length / 2]))
+        self.vertices = self.vertices_VCTtoWCF(self.verticesVCF)
+        super().__init__(center, self.vertices)
+
+        """ Vehicle structure """
+        self.d = length # Keep it simple!
+        self.length = length
+        self.width = width
+
+        """ Current state """
+        self.X = np.array([[self.originVCF[0]], [self.originVCF[1]], [0], [0]]) # State vector
+        self.alpha = 0  # Wheel angle. Throttle level can be derived from X[2:,:]
+        self.omega = 0  # Current turning rate
+
+
+        """Dynamics parameters"""
+        self.dt = dt
+        self.tau_throttle = tau_throttle # Time constant throttle (Accelerating, not breaking)
+        self.tau_steering = tau_steering # Time constant Steering (Turning)
+        self.K_a = self.dt / self.tau_steering # Gain parameter
+        self.K_v = self.dt / self.tau_throttle # Gain parameter
+        # Limits:
+        self.v_max = v_max      
+        self.alpha_max = alpha_max
+        self.k_max = 3.0        # Velocity signal parameter
+        self.c_max = 0.5        # Steering signal parameter
+
+        """ Other parameters"""
+        self.gamma = gamma
+        self.c = self.alpha_to_inverse_curve()
+        self.focus_direction = None # {1, 0, -1}
+        self.actual_direction = None # {1, 0, -1}
+
+        self.collided = False
+
+    # Print vehicle infos
+    def init_verticesVCF(self, length: float, width: float) -> List[np.array]:
+        verticesVCF = [np.array([width/2, 0]),
+                       np.array([width/2, length]),
+                       np.array([-width/2, length]),
+                       np.array([-width/2, 0])]
+        return verticesVCF
+
+    def vertices_VCTtoWCF(self, verticesVCF) -> List[np.array]:
+
+        verticesWCF = []
+
+        for vertex in verticesVCF:
+            verticesWCF.append(self.VCTtoWCF(vertex))
+        return verticesWCF
+
+    """Transformation from Center Coordinate Frame to World Coordinate Frame """
+    def CCFtoWCF(self, point: np.array) -> np.array:
+        #trans_point = np.matmul(self.rot_matrix(self.heading - np.pi/2), point) + self.position_center
+        angle = self.heading-np.pi/2
+        R_W_C = np.array([[np.cos(angle), -np.sin(angle)],
+                          [np.sin(angle), np.cos(angle)]])
+        return R_W_C@point + self.position_center
+        
+    def WCFtoCCF(self, point : np.array) -> np.array:
+        # This is same as for CCFtoWCF
+        angle = self.heading-np.pi/2
+        R = np.array([[np.cos(angle), -np.sin(angle)],
+                          [np.sin(angle), np.cos(angle)]])
+
+        return R.T@point - R.T@self.position_center
+
+    """Transformation from Vehicle Coordinate Frame to World Coordinate Frame """
+    def VCTtoWCF(self, point: np.array) -> np.array:
+        #trans_point = np.matmul(self.rot_matrix(self.heading - np.pi/2), point) + self.originVCF
+        angle = self.heading-np.pi/2
+        R_W_V = np.array([[np.cos(angle), -np.sin(angle)],
+                          [np.sin(angle), np.cos(angle)]])
+        return R_W_V@point + self.originVCF
+    
+    def WCF_rotate_CCF(self, vector_c : np.array):
+        """ Inverse of CCFtoWCF"""
+        angle = self.heading-np.pi/2
+        R_W_C = np.array([[np.cos(angle), -np.sin(angle)],
+                          [np.sin(angle), np.cos(angle)]])
+
+        return R_W_C.T@vector_c 
+
+    def WCF_rotate_VCF(self, vector_wcf : np.array):
+        """ Inverse of CCFtoWCF"""
+        angle = self.heading-np.pi/2
+        R_W_C = np.array([[np.cos(angle), -np.sin(angle)],
+                          [np.sin(angle), np.cos(angle)]])
+        return R_W_C.T@vector_wcf 
+
+    """Transformation from Vehicle Coordinate Frame to World Coordinate Frame """
+    ####################################
+    ### Methods for the motion model ###
+    ####################################
+    def alpha_to_inverse_curve(self):
+        # Mapping from steering angle alpha, to inverse curve radius c = 1/R.
+        return np.tan(self.alpha)/self.d
+
+    def one_step_algorithm(self, alpha_ref, v_ref):
+        """
+        Running one step of the update algorithm.
+        """
+        ####################################
+        # Step 0: Are we reversing or not? #
+        ####################################
+        # TODO: All bugs connected to directions.
+        # >>>>>> Sometimes, it actually runs backwards even if v_ref > 0
+        # >>>>>> Then, we get ~infinite values in the update function below.
+        if v_ref > 0:
+            self.focus_direction = 1
+        elif v_ref < 0:
+            self.focus_direction = -1
+        else: self.focus_direction = 0
+
+
+        # TODO: rather set based on v_ref, instead of actual v - might just be sliding.
+        v_k = self.X[2:,:] # Current speed from state matrix
+        v_k_VCF = self.WCF_rotate_VCF(v_k) # rotate to VCF
+        if v_k_VCF[1, 0]>0: # Driving down y axis or not.
+            self.actual_direction=1
+        elif v_k_VCF[1, 0]<0:
+            self.actual_direction=-1
+        else:
+            self.actual_direction=0
+    
+        #####################################
+        # Step 1: update u, alpha, find B_k #
+        #####################################
+
+        self.alpha = self.alpha + self.K_a * (alpha_ref - self.alpha)
+        u_k = self.K_v * (v_ref-self.actual_direction*np.linalg.norm(v_k))
+
+        # Small value problem.
+        if np.abs(u_k) < self.gamma:
+            # Done to avoid mini-vibrations: close to infinite acceleration
+            # Alternatively filter the inputs/add dampening in the first order response.
+            u_k = 0 
+
+        B_k = np.array([[0],
+                        [0], 
+                        [np.cos(self.heading)], 
+                        [np.sin(self.heading)]])
+        ######################
+        # Step 2: Choose A_k #
+        ######################
+        if np.abs(self.omega) > self.gamma:
+            A_k = np.array([[1, 0, np.sin(self.omega*self.dt)/self.omega, -(1-np.cos(self.omega*self.dt))/self.omega],
+                          [0, 1, (1-np.cos(self.omega*self.dt))/self.omega, np.sin(self.omega*self.dt)/self.omega],
+                          [0, 0, np.cos(self.omega*self.dt), -np.sin(self.omega*self.dt)], 
+                          [0, 0, np.sin(self.omega*self.dt), np.cos(self.omega*self.dt)]], dtype=np.ndarray)
+        else: # In case omega ~ 0
+            A_k = np.array([[1, 0, self.dt, 0],
+                          [0, 1, 0, self.dt],
+                          [0, 0, 1, 0], 
+                          [0, 0, 0, 1]])
+
+        # Step 3: Update state matrix
+        self.X = A_k@self.X + B_k*u_k
+
+        # Step 4: Update omega nad psi (based on theta)
+        theta_next = np.linalg.norm(v_k)*self.dt*np.tan(self.alpha) / self.d # Turn angle
+        self.heading = self.heading + theta_next # Heading in WCF
+        self.omega = np.linalg.norm(v_k)*np.tan(self.alpha) / self.d
+
+        # Step 5: Update position_center, vertices and sides accordingly.
+        self.originVCF[0], self.originVCF[1] = self.X[0, 0], self.X[1, 0]
+        self.position_center = self.VCTtoWCF(np.array([0, self.length/2]))
+
+        self.vertices = self.vertices_VCTtoWCF(self.verticesVCF)
+        self.sides = [[self.vertices[0], self.vertices[1]],
+                      [self.vertices[1], self.vertices[2]],
+                      [self.vertices[2], self.vertices[3]],
+                      [self.vertices[3], self.vertices[0]]]
+        # Bug: Needs to update the sides as well!
+        self.lines = self.eval_lines(self.sides)
+
+    def one_step_algorithm_2(self, alpha_ref, v_ref, dt):
+        """
+        Running one step of the update algorithm.
+        This differs from one_step_algorithm by adding the ability to tune dt.
+        """
+        ####################################
+        # Step 0: Are we reversing or not? #
+        ####################################
+        # TODO: All bugs connected to directions.
+        # >>>>>> Sometimes, it actually runs backwards even if v_ref > 0
+        # >>>>>> Then, we get ~infinite values in the update function below.
+        if v_ref > 0:
+            self.focus_direction = 1
+        elif v_ref < 0:
+            self.focus_direction = -1
+        else: self.focus_direction = 0
+
+
+        # TODO: rather set based on v_ref, instead of actual v - might just be sliding.
+        v_k = self.X[2:,:] # Current speed from state matrix
+        v_k_VCF = self.WCF_rotate_VCF(v_k) # rotate to VCF
+        if v_k_VCF[1, 0]>0: # Driving down y axis or not.
+            self.actual_direction=1
+        elif v_k_VCF[1, 0]<0:
+            self.actual_direction=-1
+        else:
+            self.actual_direction=0
+    
+        #####################################
+        # Step 1: update u, alpha, find B_k #
+        #####################################
+
+        self.alpha = self.alpha + self.K_a * (alpha_ref - self.alpha)
+        u_k = self.K_v * (v_ref-self.actual_direction*np.linalg.norm(v_k))
+
+        # Small value problem.
+        if np.abs(u_k) < self.gamma:
+            # Done to avoid mini-vibrations: close to infinite acceleration
+            # Alternatively filter the inputs/add dampening in the first order response.
+            u_k = 0 
+
+        B_k = np.array([[0],
+                        [0], 
+                        [np.cos(self.heading)], 
+                        [np.sin(self.heading)]])
+        ######################
+        # Step 2: Choose A_k #
+        ######################
+        if np.abs(self.omega) > self.gamma:
+            A_k = np.array([[1, 0, np.sin(self.omega*dt)/self.omega, -(1-np.cos(self.omega*dt))/self.omega],
+                          [0, 1, (1-np.cos(self.omega*dt))/self.omega, np.sin(self.omega*dt)/self.omega],
+                          [0, 0, np.cos(self.omega*dt), -np.sin(self.omega*dt)], 
+                          [0, 0, np.sin(self.omega*dt), np.cos(self.omega*dt)]], dtype=np.ndarray)
+        else: # In case omega ~ 0
+            A_k = np.array([[1, 0, dt, 0],
+                          [0, 1, 0, dt],
+                          [0, 0, 1, 0], 
+                          [0, 0, 0, 1]])
+
+        # Step 3: Update state matrix
+        self.X = A_k@self.X + B_k*u_k
+
+        # Step 4: Update omega nad psi (based on theta)
+        theta_next = np.linalg.norm(v_k)*dt*np.tan(self.alpha) / self.d # Turn angle
+        self.heading = self.heading + theta_next # Heading in WCF
+        self.omega = np.linalg.norm(v_k)*np.tan(self.alpha) / self.d
+
+        # Step 5: Update position_center, vertices and sides accordingly.
+        self.originVCF[0], self.originVCF[1] = self.X[0, 0], self.X[1, 0]
+        self.position_center = self.VCTtoWCF(np.array([0, self.length/2]))
+
+        self.vertices = self.vertices_VCTtoWCF(self.verticesVCF)
+        self.sides = [[self.vertices[0], self.vertices[1]],
+                      [self.vertices[1], self.vertices[2]],
+                      [self.vertices[2], self.vertices[3]],
+                      [self.vertices[3], self.vertices[0]]]
+        # Bug: Needs to update the sides as well!
+        self.lines = self.eval_lines(self.sides)
+
+    def one_step_algorithm_3(self, action, dt, params = [0, 0, 0, 0, 0, 0]):
+        """
+        Running one step of the update algorithm.
+        This differs from one_step_algorithm_2 by adding the ability to alter
+          a lot of the parameters. This allows for simulating error in the vehicle model.
+          residuals = [tau_v, tau_alpha, k_max, k_min, c_max, d]
+        """
+
+        ##########################
+        # Step 0: set parameters #
+        ##########################
+        #
+        tau_throttle = params[0] # Time constant throttle (Accelerating, not breaking)
+        tau_steering = params[1] # Time constant Steering (Turning)
+        K_a = dt / tau_steering # Gain parameter
+        K_v = dt / tau_throttle # Gain parameter
+        #
+        k_max = params[2]
+        k_min = params[3]
+        c_max = params[4]
+        #
+        d = params[5]
+        #################################
+        # Step 1: signal -> references? #
+        #################################
+        throttle_signal = action[0]
+        if throttle_signal >= 0:
+            v_ref = k_max*throttle_signal
+        else:
+            v_ref = -k_min*throttle_signal
+        steering_signal = action[1]
+        alpha_ref = c_max*steering_signal
+        ####################################
+        # Step 0: Are we reversing or not? #
+        ####################################
+        # Focus direction is where the vehicle is accelarating
+        if v_ref > 0:
+            self.focus_direction = 1
+        elif v_ref < 0:
+            self.focus_direction = -1
+        else: self.focus_direction = 0
+        # Actual direction is where the vehicle is going
+        v_k = self.X[2:,:] # Current speed from state matrix
+        v_k_VCF = self.WCF_rotate_VCF(v_k) # rotate to VCF
+        if v_k_VCF[1, 0]>0: # Driving down y axis or not.
+            self.actual_direction=1
+        elif v_k_VCF[1, 0]<0:
+            self.actual_direction=-1
+        else:
+            self.actual_direction=0
+        #####################################
+        # Step 1: update u, alpha, find B_k #
+        #####################################
+
+        self.alpha = self.alpha + K_a * (alpha_ref - self.alpha)
+        u_k = K_v * (v_ref-self.actual_direction*np.linalg.norm(v_k))
+
+        # Small value problem.
+        if np.abs(u_k) < self.gamma:
+            # Done to avoid mini-vibrations: close to infinite acceleration
+            # NOTE the alternative is to filter the inputs/add dampening in the first order response.
+            u_k = 0 
+
+        B_k = np.array([[0],
+                        [0], 
+                        [np.cos(self.heading)], 
+                        [np.sin(self.heading)]])
+        ######################
+        # Step 2: Choose A_k #
+        ######################
+        if np.abs(self.omega) > self.gamma:
+            A_k = np.array([[1, 0, np.sin(self.omega*dt)/self.omega, -(1-np.cos(self.omega*dt))/self.omega],
+                          [0, 1, (1-np.cos(self.omega*dt))/self.omega, np.sin(self.omega*dt)/self.omega],
+                          [0, 0, np.cos(self.omega*dt), -np.sin(self.omega*dt)], 
+                          [0, 0, np.sin(self.omega*dt), np.cos(self.omega*dt)]], dtype=np.ndarray)
+        else: # In case omega ~ 0
+            A_k = np.array([[1, 0, dt, 0],
+                          [0, 1, 0, dt],
+                          [0, 0, 1, 0], 
+                          [0, 0, 0, 1]])
+
+        # Step 3: Update state matrix
+        self.X = A_k@self.X + B_k*u_k
+
+        # Step 4: Update omega nad psi (based on theta)
+        theta_next = np.linalg.norm(v_k)*dt*np.tan(self.alpha) / d # Turn angle
+        self.heading = self.heading + theta_next # Heading in WCF
+        self.omega = np.linalg.norm(v_k)*np.tan(self.alpha) / d
+
+        # Step 5: Update position_center, vertices and sides accordingly.
+        self.originVCF[0], self.originVCF[1] = self.X[0, 0], self.X[1, 0]
+        self.position_center = self.VCTtoWCF(np.array([0, self.length/2]))
+
+        self.vertices = self.vertices_VCTtoWCF(self.verticesVCF)
+        self.sides = [[self.vertices[0], self.vertices[1]],
+                      [self.vertices[1], self.vertices[2]],
+                      [self.vertices[2], self.vertices[3]],
+                      [self.vertices[3], self.vertices[0]]]
+        # Bug: Needs to update the sides as well!
+        self.lines = self.eval_lines(self.sides)
+
+    #######################################################################
+    ###################### Nicolo  CIRCOGRAMs #############################
+    #######################################################################
+    
+    # Evaluate line equation in a point
+    def eval_value_line_eq(self, line: np.array, point: np.array) -> float:
+        """
+        PSEUDOCODE
+
+        Evaluate the value of the line equation by substituting a point as x and y
+        """
+        return line[0]*point[0] + line[1]*point[1] + line[2]
+
+    # METHOD 8: Check the intersection between a line and an entity (it works both for an object and a segment)
+    def is_line_intersect_entity(self, line: np.array, vertices: List[np.array]) -> bool:
+        """
+        PSEUDOCODE
+
+        IF every vertex of the object substituted in the line equation, gives a positive or respectively negative
+        result, there is no intersection. Return False
+        ELSE there is intersection, return True
+        """
+
+        same_side = []
+        reference = self.eval_value_line_eq(line, vertices[0]) >= 0
+
+        for vertex in vertices[1:]:
+            # We are going to compare every vertex with the initial one, if they are on the same side of the line,
+            # we add a True to the list same_side. Same side it is initialized as a list of one element True, because
+            # of course the first element is on the same side of itself.
+            same_side.append((self.eval_value_line_eq(line, vertex) >= 0) == reference)
+
+        # if all the vertex_values are positive (or negative), there is NO intersection with the ray, return False.
+        # Otherwise return True
+        return not all(same_side)
+
+    # METHOD 9: find the point of intersection between two lines, knowing that there is intersection
+    def find_intersection_line_line(self, line1: np.array, line2: np.array) -> np.array:
+        """
+        PSEUDOCODE
+
+        return the point of intersection, that can be found by solving the system of the two equations
+
+        """
+        a1 = line1[0]
+        b1 = line1[1]
+        c1 = line1[2]
+        a2 = line2[0]
+        b2 = line2[1]
+        c2 = line2[2]
+
+        den = a1*b2 - a2*b1
+        point_inters = np.array([(b1*c2 - b2*c1)/den, (a2*c1 - a1*c2)/den])
+        return point_inters
+
+    # METHOD 10: find the point of intersection between a line and a object obj and the distance between them
+    # METHOD 11: find the point of intersection between a the circogram ray and the ego vehicle
+    def find_intersection_line_ego(self, angle: float, length: float, width: float) -> np.array:
+        """
+        PSEUDOCODE
+        with the angle, evaluate the point via a formula in CCF(center coordinate frame)
+        Transform te point from CCF to WCF
+        Return the point
+        """
+        if width * abs(np.sin(angle)) < length * abs(np.cos(angle)):
+            x = sign(np.cos(angle)) * width/2
+            hit_pointCCF = np.array([x, x * np.tan(angle)])
+        else:
+            y = sign(np.sin(angle)) * length / 2
+            hit_pointCCF = np.array([y / np.tan(angle), y])
+
+        hit_pointWCF = self.CCFtoWCF(hit_pointCCF)
+
+        return hit_pointWCF
+
+    #####################################################################
+    #####################################################################'
+    ##################
+    # MY own attempt #
+    ##################
+    def static_circogram_2(self, N: int, list_objects_simul, d_horizon: float, gausian_noise=None):
+            """
+            A slight alteration of the original "static_circogram" function,
+             removing a bug where if the vehicle turned, the circogram would stop working properly.
+            """
+            # Static arrays >> dynamic arrays
+            dist_center_P1 = np.zeros(N)
+            dist_center_P2 = np.zeros(N)
+            P1 = np.zeros((N, 2))
+            P2 = np.zeros((N,2))
+            angles = np.zeros(N)
+
+            if gausian_noise:
+                mu, sigma = gausian_noise
+                noise = np.random.normal(mu, sigma, N)
+
+            for n in range(N):
+                """
+                The 1.st ray of the circogram should always be in the heading direction,
+                no matter the orientation of the ego-vehicle.
+                """
+                angle = 2*np.pi/N * n # 
+                #angle = 2*np.pi/N * n + np.pi/2 # Now it will go from the the heading (yC), instead of xC.
+                angles[n] = angle
+                # Find P1 and its distance from the center
+                P1[n]=self.find_intersection_line_ego(angle, self.length, self.width)
+                dist_center_P1[n]=self.dist_point_point(P1[n], self.position_center)
+                
+                # Find P2 and its distance from the center
+                ray_line = self.eval_line_point_point(self.position_center, P1[n])
+                all_intersections = []
+                all_distances = []
+                for obj in list_objects_simul:
+                    for i in range(len(obj.lines)):
+                        if self.is_line_intersect_entity(ray_line, obj.sides[i]):
+                            loc_point = self.find_intersection_line_line(ray_line, obj.lines[i])
+                            distance = self.dist_point_point(loc_point, self.position_center)
+
+                            #if distance < d_horizon: # Cannot be outside of view
+                            #    #TODO: all objects passed in here should **already** be close enough to be inside the horizon.
+                            #           - Needs to implement a first object pruning: a low-res distance method. 
+
+                            if self.dist_point_point(loc_point, P1[n]) < distance: # Should be on correct side of object!
+                                all_intersections.append(loc_point)
+                                all_distances.append(self.dist_point_point(loc_point, self.position_center))
+
+                                
+
+                # Choose shortest distance intersection
+                if all_intersections:  # if it not empty
+                    min_index = all_distances.index(min(all_distances))  # find position of the minimum distance in the list
+                    P2[n]=all_intersections[min_index]
+                    dist_center_P2[n]=all_distances[min_index] 
+                    
+                    if gausian_noise:
+                        #
+                        dist_center_P2[n] += dist_center_P2[n]*noise[n]
+                        # Alsp move P2
+                        vec_wcf = P2[n] - self.position_center 
+                        vec_ccf = self.WCF_rotate_CCF(vec_wcf)
+                        # IN CCF 
+                        vec_ccf = vec_ccf + vec_ccf*noise[n]
+                        P2[n] = self.CCFtoWCF(vec_ccf)
+
+
+                else: # No intersections
+                    P2[n]=None
+                    dist_center_P2[n]=d_horizon
+
+            # return the circogram function, which is a list of N tuple composed by [dist_center_P1, dist_center_P2, P1, P2, agnles]
+            circogram = [dist_center_P1, dist_center_P2, P1, P2, angles]
+            return circogram
+
+    def dynamic_cicogram_2(self, static_circogram, alpha_ref, v_ref, seconds : int = 1):
+        """
+        Based on "my method".
+        """
+        ghost_vehicle = deepcopy(self)
+        d1, d2, _, _, angles = static_circogram
+        real_distances = d2 - d1 # works with static numpy arrays
+
+        # Simulate ghost movement
+        sim_steps = int(seconds / self.dt)
+        for _ in range(sim_steps):
+            # TODO: WHY does this work??? NOTE that we pass - alpha ref
+            # NOTE could also pass 0
+            ghost_vehicle.one_step_algorithm(alpha_ref=-alpha_ref, v_ref=v_ref)
+        ghost_location = ghost_vehicle.position_center # In WCF
+        transition_vector = ghost_location - self.position_center # In WCF
+        transition_vector = ghost_vehicle.WCF_rotate_CCF(transition_vector) # in CCF
+
+        dynamic_circogram = np.zeros((len(angles), 3))
+        # TODO: dirction is set by reference speed. Is that good?
+        for i, angle in enumerate(angles):
+            # 1 Create a unit vector along the ray (angle)
+            r = np.array([np.cos(angle),np.sin(angle)])
+
+            # 2 Dot product => Produce the "movement along ray": t
+            t = np.dot(r, transition_vector)
+
+            # 3 Calculate "RISK", along ray. t/real_dist
+            #risk = t / np.linalg.norm(transition_vector) # Only gives cos(angle) => angle closest to transition vecotr
+            #risk = t # Does exact same as above, only cos(angle)*|t_vector|, which is same for every angle
+            risk = t / real_distances[i] # Along this ray
+
+            # 4 TTC= 1/Risk
+            #TTC = 1 / risk
+            dynamic_circogram[i] = np.array([angle, real_distances[i], risk])
+
+        return dynamic_circogram
+
+    # Collision check for the ego vehicle with the other objects
+    def collision_check(self, d1, d2):
+        d1 = np.array(d1)
+        diff = (d2 - d1) >= 0
+        self.collided = not all(diff)
+        return self.collided #might be unnecessary
+
+    def path_collision(self, p1, p2, obj : Object):
+        """
+        Check if two consecutive points on a path (p1 and p2) intersect any sides of the object.
+        Useful for vehicle paths. It complements self.collision_check, which only checks if it is currently inside another object.
+        """
+        # Find P2 and its distance from the center
+        trjactory_line = self.eval_line_point_point(p1, p2)
+        # Check 
+        for i in range(len(obj.lines)):
+            if self.is_line_intersect_entity(trjactory_line, obj.sides[i]):
+                # That means lines do intersect; but we do not know if it intersect between p1 and p2.
+                intersection = self.find_intersection_line_line(trjactory_line, obj.lines[i])
+                v1, v2 = obj.sides[i]
+                # Check if intersection is between p1, p2
+                if (p1[0] < intersection[0] and p2[0] > intersection[0]) \
+                    or (p1[0] > intersection[0] and p2[0] < intersection[0]) \
+                    and (p1[1] < intersection[1] and p2[1] > intersection[1]) \
+                    or (p1[1] > intersection[1] and p2[1] < intersection[1]):
+                    # Check if intersection is between v1 and v2
+                    if (v1[0] < intersection[0] and v2[0] > intersection[0]) \
+                        or (v1[0] > intersection[0] and v2[0] < intersection[0]) \
+                        and (v1[1] < intersection[1] and v2[1] > intersection[1]) \
+                        or (v1[1] > intersection[1] and v2[1] < intersection[1]): 
+                        return True
+        return False

@@ -1,0 +1,7 @@
+# Tested with Python 3.13 (Oct 2026). CPU is enough; see DDPG/ddpg_torch.py to enable CUDA.
+numpy
+numba
+matplotlib
+pygame
+gymnasium
+torch
