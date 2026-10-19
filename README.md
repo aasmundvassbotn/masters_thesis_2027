@@ -81,6 +81,28 @@ Notes on the model:
 - Thrust and thruster angle follow the commands with a small delay (`tau_thrust`,
   `tau_steering`). This is not part of the notes.
 
+## Weather
+
+`Weather.py` gives the water current and the wind for the boat simulation. The settings are at
+the top of the file and are used by `keyboard_boat`:
+
+- `CURRENT`, `WIND`: (x, y) in m/s, where x is right and y is down on the screen
+- `CURRENT_CHANGE`, `WIND_CHANGE`: chance per second that the direction changes
+- `WIND_GUST`: (min, max) wind speed in m/s, or `None` for a constant speed
+- `GUST_TIME`: how long a gust lasts, in seconds
+- `MAX_DIRECTION_CHANGE`: largest change in direction, in degrees
+- `SEED`: set a number to get the same random sequence each run
+
+Current and wind are shown in the top left corner. All boats get the same weather.
+
+How it acts on the boat (in `Boat.py`):
+
+- The current is added in the position update. With no thrust the boat drifts with the current.
+- The wind is a constant force at the centre of mass. It does not depend on the boat's speed
+  and does not turn the boat.
+- With gusts, the wind speed follows a random walk inside the given range, updated every 0.5 s.
+  Direction changes are instant.
+
 ## Checkpoints
 
 `v22`, `v22_naples_nn` and `v23` are Henrik's trained weights for the car. `v40_fw` is also from
@@ -92,6 +114,7 @@ his repo, but it is not used by any of the commands above and contains the same 
 Object.py           obstacles (polygons)
 Vehicle.py          car model and circograms (simulated lidar)
 Boat.py             boat model
+Weather.py          current and wind settings
 Agent.py            rule-based driver for the other vehicles
 limo.py             pairs a Vehicle with an Agent
 visualization.py    pygame drawing, maps and demos

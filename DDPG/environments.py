@@ -871,12 +871,16 @@ class ClosedField_v23_dyna(gym.Env): # THE MILKMAN
 
 	def __init__(self, sim_dt=0.1, decision_dt=0.5, render=False, v_max=8, v_min=-2,
 	       alpha_max=0.8, tau_steering=0.4, tau_throttle=0.4, horizon=200, edge=150,
-		   episode_s=60, reverse_ok=False, total_goals=5, vehicle="car"):
+		   episode_s=60, reverse_ok=False, total_goals=5, vehicle="car", weather=None):
 		super(ClosedField_v23_dyna, self).__init__()
 		#
 		if vehicle not in ("car", "boat"):
 			raise ValueError("vehicle must be 'car' or 'boat'")
 		self.vehicle_type = vehicle  # "car": Henrik's Vehicle, "boat": Boat (also for the other vessels)
+		# Weather (Weather.py): current and wind for all boats; None = calm
+		if weather is not None and vehicle != "boat":
+			raise ValueError("weather is only supported with vehicle='boat'")
+		self.weather = weather
 		self.sim_dt = sim_dt
 		self.decision_dt = decision_dt
 		self.v_max = v_max
@@ -972,6 +976,8 @@ class ClosedField_v23_dyna(gym.Env): # THE MILKMAN
 			# Make it a limo!
 			limo = Limo(vehicle=car, driver=agent)
 			self.limos.append(limo)
+		if self.weather is not None:
+			self.weather.apply([self.vehicle] + self.dynamic_obstacles)
 		# initial refs
 		self.alpha_refs = np.zeros(len(self.dynamic_obstacles))
 		self.v_refs = np.ones(len(self.dynamic_obstacles)) * 2
@@ -1019,6 +1025,9 @@ class ClosedField_v23_dyna(gym.Env): # THE MILKMAN
 	def step(self, action):
 		"""Execute one time step within the environment"""
 		times = np.int32(self.decision_dt/self.sim_dt)
+		if self.weather is not None:
+			self.weather.update(self.decision_dt)
+			self.weather.apply([self.vehicle] + self.dynamic_obstacles)
 		###################################################################################################################
 		# First, all dynamic obstcles
 		# Generate circogram
@@ -1158,6 +1167,34 @@ class ClosedField_v23_dyna(gym.Env): # THE MILKMAN
 		for t, frame in enumerate(self.render_frames):
 			self.render_one_frame(frame, t, show_SC=show_SC, )
 
+	def draw_weather(self):
+		"""Current (blue) and wind (grey) in the top left corner. The arrow shows the direction,
+		the text shows the speed."""
+		if self.weather is None:
+			return
+		if not hasattr(self, "_font"):
+			self._font = pygame.font.SysFont("Arial", 20)
+		L = 45  # arrow length in pixels
+		for k, (name, vec, color) in enumerate([("current", self.weather.current, (0, 90, 220)),
+												("wind", self.weather.wind, (90, 90, 90))]):
+			center = np.array([130.0 + 190 * k, 115.0])
+			pygame.draw.circle(self.gfx.map, (225, 225, 225), center, L + 8)
+			pygame.draw.circle(self.gfx.map, color, center, L + 8, 2)
+			speed = np.linalg.norm(vec)
+			if speed > 0:
+				d = vec / speed
+				start, end = center - d * L * 0.7, center + d * L * 0.7
+				pygame.draw.line(self.gfx.map, color, start, end, 5)
+				n = np.array([-d[1], d[0]])
+				pygame.draw.polygon(self.gfx.map, color, [end + 14 * d, end - 6 * d + 9 * n, end - 6 * d - 9 * n])
+				text = "%s %.1f m/s" % (name, speed)
+				if name == "wind" and self.weather.wind_gust is not None:
+					text += " (%g-%g)" % tuple(self.weather.wind_gust)
+			else:
+				text = "%s: none" % name
+			label = self._font.render(text, True, color)
+			self.gfx.map.blit(label, label.get_rect(center=(center[0], center[1] + L + 24)))
+
 	def render_one_frame(self, state, t, show_SC=False, ):
 		##################
 		self.gfx.clear_canvas()
@@ -1209,6 +1246,7 @@ class ClosedField_v23_dyna(gym.Env): # THE MILKMAN
 		
 		if show_SC:
 			self.gfx.draw_static_circogram_data(self, self.SC, self.vehicle)
+		self.draw_weather()
 		##################
 		self.gfx.update_display()
 		##################

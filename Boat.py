@@ -17,6 +17,14 @@ Follows the course model "Time-Discrete Motion Model of a Simple Boat with Rotat
 With c_sway = c_surge (and tau_thrust, tau_steering ~ 0) this reproduces the notes' Task 3
 world-frame model exactly, with the stern-thruster sign convention below.
 
+Current and wind (not in the notes). Both are world-frame vectors in m/s, zero by default, and are
+set from outside, for example by Weather.py:
+  - current: v_b is the velocity through the water, so drag acts on it, and the current is added
+    in the kinematics: p_{k+1} = p_k + T (R(psi_k) v_b[k] + current). With no thrust the boat
+    drifts with the current.
+  - wind: a constant force F_w = wind_coeff * |wind| * wind at the CoM (no yaw moment). It depends
+    on the wind only, not on the boat's own speed or heading.
+
 Sign convention (differs from the course notes):
   The thruster sits at the stern, a distance d behind the CoM. Its physical angle delta is measured
   from the forward axis. A thrust pointing to port at the stern pushes the stern to port and turns
@@ -56,6 +64,7 @@ class Boat(Vehicle):
                  alpha_max: float = 0.6,         # max thruster angle [rad]
                  tau_thrust: float = 0.8,        # thrust actuator time constant [s]
                  tau_steering: float = 0.4,      # thruster-angle actuator time constant [s]
+                 wind_coeff: float = None,       # wind force per (m/s)^2, default 0.5*1.225*1.0*(length*1 m)
                  **_ignored):                    # accepts Vehicle-only kwargs (tau_throttle, ...) for drop-in use
         super().__init__(center, length=length, width=width, heading=heading, dt=dt,
                          alpha_max=alpha_max, v_max=F_max / c_surge,
@@ -66,6 +75,9 @@ class Boat(Vehicle):
         self.F_max, self.F_min = F_max, F_min
         self.tau_thrust = tau_thrust
         self.d_thruster = length / 2      # CoM -> thruster distance
+        self.wind_coeff = wind_coeff if wind_coeff is not None else 0.5 * 1.225 * 1.0 * length * 1.0
+        self.current = np.zeros(2)        # water current [m/s], world frame
+        self.wind = np.zeros(2)           # wind [m/s], world frame
 
         # Boat state (on top of Vehicle's heading / position_center)
         self.p = np.array(center, dtype=float)    # CoM position, world frame
@@ -92,9 +104,14 @@ class Boat(Vehicle):
         Fy = self.F * np.sin(delta)
         tau = -self.d_thruster * Fy               # = d F sin(alpha)
 
-        # Kinematics with the old velocities (as in the notes)
+        # Wind force (world frame) expressed in the body frame
         R = self._R(self.heading)
-        self.p = self.p + T * (R @ self.v_b)
+        F_wind_b = R.T @ (self.wind_coeff * np.linalg.norm(self.wind) * self.wind)
+        Fx += F_wind_b[0]
+        Fy += F_wind_b[1]
+
+        # Kinematics with the old velocities (as in the notes), plus the current
+        self.p = self.p + T * (R @ self.v_b + self.current)
         psi_new = self.heading + T * self.omega
 
         # Exact first-order updates
@@ -132,8 +149,8 @@ class Boat(Vehicle):
 
     @property
     def velocity_world(self):
-        """Velocity in the world frame."""
-        return self._R(self.heading) @ self.v_b
+        """Velocity over ground (velocity through the water + current), world frame."""
+        return self._R(self.heading) @ self.v_b + self.current
 
     def _sync_geometry(self):
         """Keep the Vehicle fields that the rest of the code reads in sync with the boat state."""
