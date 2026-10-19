@@ -55,6 +55,32 @@ python -m DDPG.main_torch ddpg_dynamic [episodes]
 
 Weights are saved to `DDPG/checkpoints/my_*` and plots to `DDPG/plots/`.
 
+## Boat
+
+`Boat.py` is a boat model based on the course notes "Time-Discrete Motion Model of a Simple Boat
+with Rotatable Thruster", using the refined version with separate surge and sway drag.
+It can replace the car in `ClosedField_v23_dyna`.
+
+Drive the boat with the arrow keys:
+
+```
+python -m DDPG.visualize_ddpg keyboard_boat
+```
+
+Up/down is forward and reverse thrust, with no key pressed the boat drifts. Left/right turns
+the thruster. The other vessels are boats as well.
+
+Mass, thrust, drag and size are the default values in `Boat.__init__`.
+
+Notes on the model:
+
+- The thruster is at the stern, so the torque is -d F sin(delta). The code uses the steering
+  angle alpha = -delta, which gives d F sin(alpha) as in the notes.
+- The velocity is stored in the body frame and rotated each step as the boat turns. With
+  `c_sway = c_surge` and no actuator delay the model gives the same result as Task 3 in the notes.
+- Thrust and thruster angle follow the commands with a small delay (`tau_thrust`,
+  `tau_steering`). This is not part of the notes.
+
 ## Checkpoints
 
 `v22`, `v22_naples_nn` and `v23` are Henrik's trained weights for the car. `v40_fw` is also from
@@ -65,6 +91,7 @@ his repo, but it is not used by any of the commands above and contains the same 
 ```
 Object.py           obstacles (polygons)
 Vehicle.py          car model and circograms (simulated lidar)
+Boat.py             boat model
 Agent.py            rule-based driver for the other vehicles
 limo.py             pairs a Vehicle with an Agent
 visualization.py    pygame drawing, maps and demos
@@ -80,7 +107,7 @@ DDPG/
 Environments in `DDPG/environments.py`:
 
 - `ClosedField_v22`: DDPG, static maps (`four_walls`, `naples_street`)
-- `ClosedField_v23_dyna`: DDPG, open area with 6 rule-based vehicles
+- `ClosedField_v23_dyna`: DDPG, open area with 6 rule-based vehicles, car or boat
 - `MPC_environment_v40`: PDRL, static maps
 - `MPC_environment_v41`: PDRL with rule-based vehicles
 

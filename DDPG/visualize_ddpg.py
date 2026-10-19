@@ -57,11 +57,13 @@ def visualize_v22(sim_dt=0.05, decision_dt=0.5, folder="...",
         #env.close() # Automatically when env is garbage-collected.
 
 def visualize_v23(sim_dt=0.05, decision_dt=0.5, folder="...",
-                  v_max=20, v_min=-4, alpha_max=0.5, tau_steering=0.5, tau_throttle=0.5, user_controlled=False):
+                  v_max=20, v_min=-4, alpha_max=0.5, tau_steering=0.5, tau_throttle=0.5, user_controlled=False,
+                  vehicle="car"):
+    """vehicle="car" (Henrik's model) or "boat" (Boat.py, also used for the other vessels)."""
 
     env = ClosedField_v23_dyna(sim_dt=sim_dt, decision_dt=decision_dt, render=True,
                                 v_max=v_max, v_min=v_min, alpha_max=alpha_max, tau_steering=tau_steering, tau_throttle=tau_throttle,
-                                    horizon=200, episode_s=200)
+                                    horizon=200, episode_s=200, vehicle=vehicle)
     # Start a new agent
     agent = Agent(alpha=0.000025, beta=0.00025, input_dims=[42], tau=0.1, env=env, 
                     batch_size=64,  layer1_size=400, layer2_size=300, n_actions=2, chkpt_dir=folder)
@@ -314,6 +316,7 @@ if __name__ == "__main__":
     #   python -m DDPG.visualize_ddpg pdrl_dynamic   # PDRL among other moving vehicles
     #   python -m DDPG.visualize_ddpg ddpg           # plain DDPG agent, static walls
     #   python -m DDPG.visualize_ddpg ddpg_dynamic   # plain DDPG agent among other moving vehicles
+    #   python -m DDPG.visualize_ddpg keyboard_boat  # drive the boat with the arrow keys
     # The weights in DDPG/checkpoints are the ones Henrik trained for the car.
     mode = sys.argv[1] if len(sys.argv) > 1 else "pdrl"
     common = dict(v_max=20, v_min=-4, alpha_max=0.5, tau_steering=0.5, tau_throttle=0.5)
@@ -329,7 +332,11 @@ if __name__ == "__main__":
     elif mode == "ddpg":
         visualize_v22(sim_dt=0.05, decision_dt=0.5, folder="DDPG/checkpoints/v22",
                       environment_selection="four_walls", **common)
+    elif mode == "keyboard_boat":
+        # Drive the boat with the arrow keys among other boats (the trained agent is loaded but not used).
+        visualize_v23(sim_dt=0.05, decision_dt=0.5, folder="DDPG/checkpoints/v23", user_controlled=True,
+                      vehicle="boat", **common)
     elif mode == "ddpg_dynamic":
         visualize_v23(sim_dt=0.05, decision_dt=0.5, folder="DDPG/checkpoints/v23", user_controlled=False, **common)
     else:
-        sys.exit("Unknown mode '%s'. Use: pdrl | pdrl_dynamic | ddpg | ddpg_dynamic" % mode)
+        sys.exit("Unknown mode '%s'. Use: pdrl | pdrl_dynamic | ddpg | ddpg_dynamic | keyboard_boat" % mode)

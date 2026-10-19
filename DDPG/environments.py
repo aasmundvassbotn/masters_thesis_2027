@@ -7,6 +7,7 @@ from copy import deepcopy
 
 # Simulator (repo root)
 from Vehicle import Vehicle
+from Boat import Boat
 
 from Agent import Agent # DC agents
 from limo import Limo
@@ -870,9 +871,12 @@ class ClosedField_v23_dyna(gym.Env): # THE MILKMAN
 
 	def __init__(self, sim_dt=0.1, decision_dt=0.5, render=False, v_max=8, v_min=-2,
 	       alpha_max=0.8, tau_steering=0.4, tau_throttle=0.4, horizon=200, edge=150,
-		   episode_s=60, reverse_ok=False, total_goals=5):
+		   episode_s=60, reverse_ok=False, total_goals=5, vehicle="car"):
 		super(ClosedField_v23_dyna, self).__init__()
 		#
+		if vehicle not in ("car", "boat"):
+			raise ValueError("vehicle must be 'car' or 'boat'")
+		self.vehicle_type = vehicle  # "car": Henrik's Vehicle, "boat": Boat (also for the other vessels)
 		self.sim_dt = sim_dt
 		self.decision_dt = decision_dt
 		self.v_max = v_max
@@ -930,8 +934,12 @@ class ClosedField_v23_dyna(gym.Env): # THE MILKMAN
 
 	def dynamic_dojo(self):
 		""" Environment with four walls """
-		# Volkswagen
-		self.vehicle = Vehicle(np.array([132, 75]), length=4, width=2,
+		boat = self.vehicle_type == "boat"
+		# Ego vehicle
+		if boat:
+			self.vehicle = Boat(np.array([132, 75]), length=8, width=3, heading=-np.pi/2, dt=self.sim_dt)
+		else:
+			self.vehicle = Vehicle(np.array([132, 75]), length=4, width=2,
 								heading=-np.pi/2, tau_steering=self.tau_steering, tau_throttle=self.tau_throttle, dt=self.sim_dt)
 		#######################################
 		# Spawn in the outer wall & obstacles #
@@ -941,12 +949,14 @@ class ClosedField_v23_dyna(gym.Env): # THE MILKMAN
 		
 		#############################################################################################################################
 		# Add other vehicles
-		car1 = Vehicle(np.array([25, 35]),  length=8, width=4, heading=0,     tau_steering=1, tau_throttle=0.4, dt=0.1) 
-		car2 = Vehicle(np.array([250, 35]), length=8, width=4, heading=np.pi, tau_steering=1, tau_throttle=0.4, dt=0.1) 
-		car3 = Vehicle(np.array([25, 95]),  length=8, width=4, heading=0,     tau_steering=1, tau_throttle=0.4, dt=0.1) 
-		car4 = Vehicle(np.array([250, 95]), length=8, width=4, heading=np.pi, tau_steering=1, tau_throttle=0.4, dt=0.1)
-		car5 = Vehicle(np.array([25, 130]), length=8, width=4, heading=0, tau_steering=1, tau_throttle=0.4, dt=0.1)
-		car6 = Vehicle(np.array([250, 130]), length=8, width=4, heading=np.pi, tau_steering=1, tau_throttle=0.4, dt=0.1)
+		Other = Boat if boat else Vehicle
+		size = dict(length=8, width=3) if boat else dict(length=8, width=4, tau_steering=1, tau_throttle=0.4)
+		car1 = Other(np.array([25, 35]),  heading=0,     dt=0.1, **size)
+		car2 = Other(np.array([250, 35]), heading=np.pi, dt=0.1, **size)
+		car3 = Other(np.array([25, 95]),  heading=0,     dt=0.1, **size)
+		car4 = Other(np.array([250, 95]), heading=np.pi, dt=0.1, **size)
+		car5 = Other(np.array([25, 130]), heading=0,     dt=0.1, **size)
+		car6 = Other(np.array([250, 130]), heading=np.pi, dt=0.1, **size)
 
 
 		self.dynamic_obstacles = [car1, car2, car3, car4, car5, car6]
@@ -954,7 +964,7 @@ class ClosedField_v23_dyna(gym.Env): # THE MILKMAN
 		self.objects = [car1, car2, car3, car4, car5, car6, self.outer_rim]
 		# Spawn drivers
 		alpha_max = 1.0 # Volkswagen
-		v_max = 10 # 6 
+		v_max = 3 if boat else 10 # boats cannot brake, so their reactive drivers go slower
 		v_min = -4 
 		self.limos = []
 		for car in self.dynamic_obstacles:
