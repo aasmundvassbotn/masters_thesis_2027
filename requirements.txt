@@ -1,7 +1,8 @@
-# Tested with Python 3.13 (Oct 2026). CPU is enough; see DDPG/ddpg_torch.py to enable CUDA.
-numpy
-numba
-matplotlib
-pygame
-gymnasium
-torch
+# Latest versions as of Oct 2026, checked to resolve together and to run the simulator on Python 3.12
+# (torch only checked to resolve). CPU is enough; see DDPG/ddpg_torch.py to enable CUDA.
+numpy==2.5.4
+numba==0.68.0
+matplotlib==3.11.2
+pygame==2.6.1
+gymnasium==1.4.0
+torch==2.14.1
