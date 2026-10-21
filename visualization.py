@@ -3,6 +3,7 @@ import math
 import numpy as np
 from Object import Object
 from Vehicle import Vehicle
+from Boat import Boat
 from limo import Limo
 from Agent import Agent
 import copy
@@ -444,21 +445,26 @@ def driving_with_many_determined_drivers():
             # Run one step
             limo.vehicle.one_step_algorithm(alpha_ref=alpha_refs[n], v_ref=v_refs[n])
 
-def map_circle_multi(scale=1, height=1080, width=1920, pixels_per_unit=10, viz=True, dt=0.1):
+def map_circle_multi(scale=1, height=1080, width=1920, pixels_per_unit=10, viz=True, dt=0.1, vehicle="car"):
+    """vehicle="car": Henrik's Vehicle (8 x 4). vehicle="boat": Boat.py with its default parameters (8 x 3)."""
     # Spawn in the walls:
     #vertices = PointsOnCircum(r=100, n=50, center=(75, 55))
 
     vertices = np.array([[0, 0], [0, 100], [100, 100], [100, 0]])
     outer_rim = Object(np.array([0, 0]), vertices=vertices)
 
+    if vehicle == "boat":
+        Model, size = Boat, dict(length=8, width=3)
+    else:
+        Model, size = Vehicle, dict(length=8, width=4, tau_steering=0.4, tau_throttle=0.4)
     # Volkswagen
-    car1 = Vehicle(np.array([35, 20]),  length=8, width=4, heading=0,     tau_steering=0.4, tau_throttle=0.4, dt=dt) 
-    car2 = Vehicle(np.array([65,20]), length=8, width=4, heading=np.pi, tau_steering=0.4, tau_throttle=0.4, dt=dt) 
-    car3 = Vehicle(np.array([25, 55]),  length=8, width=4, heading=0,     tau_steering=0.4, tau_throttle=0.4, dt=dt) 
-    car4 = Vehicle(np.array([85,55]), length=8, width=4, heading=np.pi, tau_steering=0.4, tau_throttle=0.4, dt=dt)
+    car1 = Model(np.array([35, 20]), heading=0,     dt=dt, **size)
+    car2 = Model(np.array([65, 20]), heading=np.pi, dt=dt, **size)
+    car3 = Model(np.array([25, 55]), heading=0,     dt=dt, **size)
+    car4 = Model(np.array([85, 55]), heading=np.pi, dt=dt, **size)
     # Extra
-    car5 = Vehicle(np.array([65, 35]),  length=8, width=4, heading=np.pi,     tau_steering=0.4, tau_throttle=0.4, dt=dt) 
-    car6 = Vehicle(np.array([85, 35]),  length=8, width=4, heading=0,         tau_steering=0.4, tau_throttle=0.4, dt=dt)
+    car5 = Model(np.array([65, 35]), heading=np.pi, dt=dt, **size)
+    car6 = Model(np.array([85, 35]), heading=0,     dt=dt, **size)
 
     objects = [car1, car2, car3, car4, car5, car6, outer_rim] #, wall2, wall3, wall4, wall5, wall6, wall7, wall8, wall9]#, wall10]
     cars = [car1, car2, car3, car4, car5, car6]
@@ -542,13 +548,92 @@ def driving_with_many_boats():
 
 
 
+def boat_speed_command(boat : Boat, v_ref, k_brake=3.0):
+    """Speed reference -> the v_ref passed to Boat.one_step_algorithm.
+    Boat maps v_ref to the thrust c_surge*v_ref, which only gives v_ref in steady state: with v_ref = 0 the
+    boat coasts ~23 m from 7 m/s. Adding k_brake*(v_ref - u) gives a P speed controller, so the boat uses
+    reverse thrust to slow down (limited by F_min in Boat)."""
+    return v_ref + k_brake * (v_ref - boat.v_b[0])
+
+def driving_with_boat_model(steps=8000, viz=True, dt=0.1,
+                            v_max=4, v_min=-2, alpha_max=0.6, risk_threshold=0.4, stop_threshold=1,
+                            seconds=5, k_brake=3.0):
+    """Same as driving_with_many_boats, but with the boat model (Boat.py) instead of the car model.
+    The driver settings are retuned for the boat, which is slower to stop and to turn than the car:
+      - v_max 4 m/s instead of 7 (top speed of the boat is 7)
+      - dynamic circogram looks 5 s ahead instead of 3, and the driver stops at a lower risk (stop_threshold 1)
+      - active braking with reverse thrust (boat_speed_command)
+    The dynamic circogram's ghost boat gets the raw v_ref, so it predicts coasting rather than braking,
+    which makes the risk estimate a bit conservative.
+    Returns the number of collisions (a vessel going from free to collided)."""
+    if viz:
+        gfx, objects, cars = map_circle_multi(scale=1, height=1200, width=2200, pixels_per_unit=10, dt=dt, vehicle="boat")
+    else:
+        objects, cars = map_circle_multi(viz=False, dt=dt, vehicle="boat")
+
+    # Spawn drivers
+    limos = []
+    for car in cars:
+        agent = Agent(v_max, v_min, alpha_max)
+        limo = Limo(vehicle=car, driver=agent)
+        limos.append(limo)
+
+    alpha_refs = np.zeros(len(cars))
+    v_refs = np.ones(len(cars))
+    collisions = 0
+    N = 36
+    horizon = 500
+    for i in range(steps):
+        if viz:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT: # Press x button
+                    exit()
+            gfx.clear_canvas()
+            gfx.draw_all_objects(objects)
+
+        # Circograms!
+        DCs = []
+        SCs = []
+        for n, car in enumerate(cars):
+            static_circogram = car.static_circogram_2(N, objects[0:n]+objects[n+1:], horizon)
+            dynamic_circogram = car.dynamic_cicogram_2(static_circogram, alpha_refs[n], v_refs[n], seconds=seconds)
+            d1, d2, _, _, _ = static_circogram
+            was_collided = getattr(car, "collided", False)
+            car.collision_check(d1, d2)
+            collisions += car.collided and not was_collided
+            DCs.append(dynamic_circogram)
+            SCs.append(static_circogram)
+
+        for n, limo in enumerate(limos):
+            if not limo.vehicle.collided:
+                v_refs[n], alpha_refs[n] = limo.driver.determined_driver(DCs[n], SCs[n], v_refs[n], alpha_refs[n], risk_threshold=risk_threshold, stop_threshold=stop_threshold, dist_wait=10, verbose=False)
+            else:
+                v_refs[n], alpha_refs[n] = (0, 0)
+            # Run one step
+            limo.vehicle.one_step_algorithm(alpha_ref=alpha_refs[n], v_ref=boat_speed_command(limo.vehicle, v_refs[n], k_brake))
+
+        if viz:
+            gfx.draw_headings(cars, scale=True)
+            gfx.draw_centers(cars)
+            gfx.update_display()
+    return collisions
+
+
 if __name__ == "__main__":
     # Multi-agent simulation with reactive (rule-based) drivers, no learning involved.
     # Usage (from the repo root):
-    #   python visualization.py          # Henrik's "boats" demo (car model) in an empty square basin
-    #   python visualization.py cars     # cars in the city-block map (other maps: see the function)
+    #   python visualization.py               # Henrik's "boats" demo (car model) in an empty square basin
+    #   python visualization.py vehicle=car   # same as above
+    #   python visualization.py vehicle=boat  # same basin with the boat model (Boat.py), driver retuned for boats
+    #   python visualization.py cars          # cars in the city-block map (other maps: see the function)
     import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "cars":
+    args = dict(a.split("=", 1) for a in sys.argv[1:] if "=" in a)
+    vehicle = args.get("vehicle", "car")
+    if "cars" in sys.argv[1:]:
         driving_with_many_determined_drivers()
-    else:
+    elif vehicle == "car":
         driving_with_many_boats()
+    elif vehicle == "boat":
+        driving_with_boat_model()
+    else:
+        sys.exit("Unknown vehicle '%s'. Use: vehicle=car | vehicle=boat" % vehicle)

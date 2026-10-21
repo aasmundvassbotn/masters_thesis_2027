@@ -32,9 +32,16 @@ This needs torch, since the trained agent is loaded.
 Simulation with only rule-based drivers:
 
 ```
-python visualization.py          # Henrik's "boats" demo, using the car model
-python visualization.py cars     # cars in a city block map
+python visualization.py                # Henrik's "boats" demo, using the car model
+python visualization.py vehicle=car    # same as above
+python visualization.py vehicle=boat   # same basin with the boat model (Boat.py)
+python visualization.py cars           # cars in a city block map
 ```
+
+With `vehicle=boat` the drivers are retuned because a boat stops and turns more slowly than the car:
+top speed 4 m/s, the dynamic circogram looks 5 s ahead, the driver stops at a lower risk, and the
+boats brake with reverse thrust (`boat_speed_command`). The settings are arguments of
+`driving_with_boat_model` in `visualization.py`.
 
 Trained agents:
 
